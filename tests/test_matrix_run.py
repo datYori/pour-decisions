@@ -70,3 +70,15 @@ def test_run_one_records_error_on_train_failure(tmp_path: Path):
         work_dir=tmp_path,
     )
     assert result.status == "error" and "arch unsupported" in result.reason
+
+
+def test_read_training_summary(tmp_path):
+    import json
+
+    from pour_decisions.matrix.run_matrix import _read_training_summary
+
+    assert _read_training_summary(tmp_path) == (None, None)
+    (tmp_path / "summary.json").write_text(
+        json.dumps({"final_train_loss": 0.1, "best_val_loss": 0.4})
+    )
+    assert _read_training_summary(tmp_path) == (0.1, 0.4)

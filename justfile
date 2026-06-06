@@ -30,6 +30,7 @@ data:
 local-setup backend="mlx":
     uv sync --extra {{backend}} --extra dev
     @echo "Gated models (gemma-*, llama-3.2-1b) need: hf auth login + accept the license on HF."
+    @echo "Training telemetry (matplotlib + tensorboardX) is included in the mlx extra; view with: just local-tensorboard"
 
 # Fine-tune + eval one model (dev loop). Positional args: just local-one qwen2.5-0.5b
 local-one key backend="mlx" modes="unconstrained,constrained":
@@ -42,6 +43,10 @@ local-matrix backend="mlx" modes="unconstrained,constrained":
 # Re-render the report from the committed json (no retrain).
 local-report:
     uv run python -c "from pathlib import Path; from pour_decisions.matrix.report import load_results, rebuild_results, render_markdown; print(render_markdown(rebuild_results(load_results(Path('reports/local-matrix.json')))))"
+
+# View training curves in TensorBoard (after a local run). Uses uvx (no extra dep).
+local-tensorboard:
+    uvx tensorboard --logdir runs/local
 
 # ── infra ─────────────────────────────────────────────────────────────────────
 

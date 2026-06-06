@@ -1,13 +1,12 @@
 """Trainer protocol + MLX (Apple Silicon) and PEFT (CUDA) LoRA backends.
 
-The argv builder `mlx_lora_command` is pure and unit-tested. `.train()` runs the backend and is
-exercised only on hardware (see the validation run). Heavy libs are imported lazily.
+MLXTrainer trains in-process via mlx_lm and emits training telemetry
+(metrics.jsonl, summary.json, training_dashboard.png, tb/). Heavy libs are
+imported lazily. The actual training is exercised on hardware, not in unit tests.
 """
 
 from __future__ import annotations
 
-import subprocess
-import time
 from pathlib import Path
 from typing import Protocol
 
@@ -18,36 +17,27 @@ class Trainer(Protocol):
     def train(self, spec: ModelSpec, data_dir: Path, out_dir: Path) -> Path: ...
 
 
-def mlx_lora_command(spec: ModelSpec, data_dir: Path, out_dir: Path) -> list[str]:
-    return [
-        "mlx_lm.lora",
-        "--model",
-        spec.hf_id,
-        "--train",
-        "--data",
-        str(data_dir),
-        "--adapter-path",
-        str(out_dir),
-        "--iters",
-        str(spec.lora.iters),
-        "--batch-size",
-        str(spec.lora.batch_size),
-        "--num-layers",
-        str(spec.lora.num_layers),
-        "--learning-rate",
-        str(spec.lora.learning_rate),
-        "--max-seq-length",
-        str(spec.lora.max_seq_len),
-    ]
+def count_examples(data_dir: Path) -> int:
+    p = data_dir / "train.jsonl"
+    if not p.exists():
+        return 0
+    return sum(1 for line in p.read_text().splitlines() if line.strip())
 
 
 class MLXTrainer:
     def train(self, spec: ModelSpec, data_dir: Path, out_dir: Path) -> Path:
+        from pour_decisions.matrix import telemetry
+        from pour_decisions.matrix.mlxtrain import run_lora_with_metrics
+        from pour_decisions.matrix.plots import render_dashboard
+
         out_dir.mkdir(parents=True, exist_ok=True)
-        cmd = mlx_lora_command(spec, data_dir, out_dir)
-        t0 = time.monotonic()
-        subprocess.run(cmd, check=True)
-        (out_dir / ".train_seconds").write_text(str(time.monotonic() - t0))
+        run_dir = out_dir.parent
+        run_dir.mkdir(parents=True, exist_ok=True)
+        tm = run_lora_with_metrics(
+            spec, data_dir, out_dir, count_examples(data_dir), tb_dir=run_dir / "tb"
+        )
+        telemetry.write(tm, run_dir)
+        render_dashboard(tm, run_dir / "training_dashboard.png")
         return out_dir
 
 

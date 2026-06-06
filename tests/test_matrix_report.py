@@ -72,3 +72,19 @@ def test_rebuild_results_round_trip(tmp_path: Path):
     write_reports([original], md_path, json_path)
     rebuilt = rebuild_results(load_results(json_path))
     assert render_markdown(rebuilt) == render_markdown([original])
+
+
+def test_training_section_and_round_trip(tmp_path: Path):
+    r = _result()
+    r.final_train_loss = 0.104
+    r.best_val_loss = 0.393
+    md = render_markdown([r])
+    assert "## Training" in md
+    assert "0.104" in md and "0.393" in md
+    assert "runs/local/smollm2-135m/training_dashboard.png" in md
+    md_path, json_path = tmp_path / "m.md", tmp_path / "m.json"
+    write_reports([r], md_path, json_path)
+    rebuilt = rebuild_results(load_results(json_path))
+    assert rebuilt[0].final_train_loss == 0.104
+    assert rebuilt[0].best_val_loss == 0.393
+    assert render_markdown(rebuilt) == render_markdown([r])
