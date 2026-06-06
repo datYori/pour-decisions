@@ -1,0 +1,5 @@
+{
+  "gold":  [{"name":"X","ingredients":[{"quantity":30,"unit":"ml","ingredient":"Gin"}]}],
+  "base":  [{"name":"X","ingredients":[{"quantity":45,"unit":"ml","ingredient":"Gin"}]}],
+  "tuned": [{"name":"X","ingredients":[{"quantity":30,"unit":"ml","ingredient":"Gin"}]}]
+}

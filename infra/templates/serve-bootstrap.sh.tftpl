@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# Serve-instance bootstrap.
+# All output tee'd to /var/log/pour-bootstrap.log AND the console.
+# Template vars: bucket_name, region, model_s3_prefix, served_model_name, is_eval_host
+set -euo pipefail
+exec > >(tee -a /var/log/pour-bootstrap.log) 2>&1
+
+echo "[bootstrap] Starting serve bootstrap at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# ---------------------------------------------------------------------------
+# 1. SSM agent
+# ---------------------------------------------------------------------------
+if ! systemctl is-active --quiet snap.amazon-ssm-agent.amazon-ssm-agent 2>/dev/null && \
+   ! systemctl is-active --quiet amazon-ssm-agent 2>/dev/null; then
+  echo "[bootstrap] SSM agent not running — installing via snap"
+  snap install amazon-ssm-agent --classic
+fi
+snap start amazon-ssm-agent 2>/dev/null || true
+for i in $(seq 1 6); do
+  if snap services amazon-ssm-agent 2>/dev/null | grep -q active; then
+    echo "[bootstrap] SSM agent is active"
+    break
+  fi
+  sleep 5
+done
+
+# ---------------------------------------------------------------------------
+# 2. Verify Docker + nvidia container runtime (DLAMI ships both)
+# ---------------------------------------------------------------------------
+echo "[bootstrap] Docker version: $(docker --version)"
+echo "[bootstrap] nvidia-smi:"
+nvidia-smi || echo "[bootstrap] WARN: nvidia-smi failed — check GPU attachment"
+if docker info 2>/dev/null | grep -q "nvidia"; then
+  echo "[bootstrap] nvidia docker runtime present"
+else
+  echo "[bootstrap] WARN: nvidia docker runtime not detected in 'docker info'"
+fi
+
+# ---------------------------------------------------------------------------
+# 3. System dependencies
+# ---------------------------------------------------------------------------
+apt-get update -y
+apt-get install -y unzip curl
+
+if ! command -v aws &>/dev/null; then
+  echo "[bootstrap] Installing AWS CLI v2"
+  curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+  unzip -q /tmp/awscliv2.zip -d /tmp
+  /tmp/aws/install
+fi
+
+if ! command -v uv &>/dev/null; then
+  echo "[bootstrap] Installing uv"
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ln -sf /root/.local/bin/uv /usr/local/bin/uv
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Pull repo from S3 (needed on both boxes; eval tooling lives in the repo)
+# ---------------------------------------------------------------------------
+echo "[bootstrap] Fetching repo.zip from s3://${bucket_name}/repo.zip"
+aws s3 cp "s3://${bucket_name}/repo.zip" /opt/repo.zip --region ${region}
+mkdir -p /opt/pour-decisions
+unzip -o /opt/repo.zip -d /opt/pour-decisions
+echo "[bootstrap] Repo unpacked to /opt/pour-decisions"
+
+# ---------------------------------------------------------------------------
+# 5. Write serve.sh (one-liner trigger via SSM)
+#    Uses a single-quoted heredoc so bash vars are written verbatim.
+#    BUCKET_PLACEHOLDER / REGION_PLACEHOLDER / MODEL_PREFIX_PLACEHOLDER /
+#    MODEL_NAME_PLACEHOLDER are baked by sed after the heredoc closes.
+# ---------------------------------------------------------------------------
+cat > /opt/pour-decisions/serve.sh <<'SERVESH'
+#!/usr/bin/env bash
+# Sync model artifacts from S3 then start the vLLM container.
+# Invoked via SSM: bash /opt/pour-decisions/serve.sh
+set -euo pipefail
+exec > >(tee -a /var/log/pour-serve.log) 2>&1
+
+echo "[serve] Starting at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+BUCKET="BUCKET_PLACEHOLDER"
+REGION="REGION_PLACEHOLDER"
+MODEL_PREFIX="MODEL_PREFIX_PLACEHOLDER"
+SERVED_MODEL_NAME="MODEL_NAME_PLACEHOLDER"
+
+echo "[serve] Syncing model from s3://$BUCKET/$MODEL_PREFIX/"
+mkdir -p /opt/pour-decisions/serving/model
+aws s3 sync "s3://$BUCKET/$MODEL_PREFIX/" /opt/pour-decisions/serving/model/ --region "$REGION"
+
+# Pre-warm the page cache: vLLM mmaps the safetensors and faults it in 4KB at a
+# time, which is IOPS-bound (~6 MB/s) on a cold gp3 volume. A sequential read
+# pulls it via readahead (throughput-bound ~125 MB/s) so vLLM loads from RAM
+# instead of stalling in D-state on folio_wait. (See docs/learning/07 D2.)
+echo "[serve] Pre-warming model into page cache"
+cat /opt/pour-decisions/serving/model/consolidated.safetensors > /dev/null
+
+echo "[serve] Starting vLLM (served-model-name: $SERVED_MODEL_NAME)"
+docker run -d \
+  --runtime nvidia \
+  --gpus all \
+  --ipc=host \
+  -p 8000:8000 \
+  -v /opt/pour-decisions/serving/model:/models/m \
+  vllm/vllm-openai:latest \
+  --model /models/m \
+  --tokenizer_mode mistral \
+  --load_format mistral \
+  --config_format mistral \
+  --served-model-name "$SERVED_MODEL_NAME" \
+  --max-model-len 8192 \
+  --enforce-eager
+
+echo "[serve] Done at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "[serve] vLLM endpoint: http://localhost:8000 (model: $SERVED_MODEL_NAME)"
+SERVESH
+
+sed -i "s|BUCKET_PLACEHOLDER|${bucket_name}|g"          /opt/pour-decisions/serve.sh
+sed -i "s|REGION_PLACEHOLDER|${region}|g"               /opt/pour-decisions/serve.sh
+sed -i "s|MODEL_PREFIX_PLACEHOLDER|${model_s3_prefix}|g" /opt/pour-decisions/serve.sh
+sed -i "s|MODEL_NAME_PLACEHOLDER|${served_model_name}|g" /opt/pour-decisions/serve.sh
+chmod +x /opt/pour-decisions/serve.sh
+
+%{ if is_eval_host }
+# ---------------------------------------------------------------------------
+# 6. Eval host only: set up the pour-decisions venv so 'make eval' works.
+#    uv sync installs all declared dependencies (including gpu extras needed
+#    for eval: mistral-common, openai, mlflow).
+# ---------------------------------------------------------------------------
+echo "[bootstrap] Setting up pour-decisions venv for eval"
+cd /opt/pour-decisions
+uv sync --extra gpu
+echo "[bootstrap] pour-decisions venv ready"
+%{ endif }
+
+# ---------------------------------------------------------------------------
+# Done
+# ---------------------------------------------------------------------------
+touch /opt/READY
+echo "[bootstrap] Serve bootstrap complete — instance is READY"

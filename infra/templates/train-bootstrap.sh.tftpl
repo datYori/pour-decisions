@@ -1,0 +1,275 @@
+#!/usr/bin/env bash
+# Train-instance bootstrap.
+# All output is tee'd to /var/log/pour-bootstrap.log AND the console
+# (visible in EC2 system log / cloud-init output).
+# Run by cloud-init as root on first boot.
+#
+# This script only runs ONCE (cloud-init first-boot). It:
+#   1. Installs the SSM agent (if absent).
+#   2. Installs system dependencies (uv, awscli, unzip).
+#   3. Pulls the repo zip from S3.
+#   4. Clones mistral-finetune and installs its Python deps.
+#   5. Writes /opt/pour-decisions/train.sh (the actual job — idempotent, spot-safe).
+#   6. Installs + enables the pour-train.service systemd unit (fires on every boot).
+#   7. Touches /opt/READY.
+#
+# The train.sh and systemd unit handle all model work. Separating them from
+# bootstrap means a spot stop→restart re-runs the job without re-downloading
+# the entire toolchain.
+set -euo pipefail
+exec > >(tee -a /var/log/pour-bootstrap.log) 2>&1
+
+echo "[bootstrap] Starting train bootstrap at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# ---------------------------------------------------------------------------
+# 1. SSM agent
+# ---------------------------------------------------------------------------
+# Ubuntu DLAMI ships snapd; install via snap if the classic deb is absent.
+if ! systemctl is-active --quiet snap.amazon-ssm-agent.amazon-ssm-agent 2>/dev/null && \
+   ! systemctl is-active --quiet amazon-ssm-agent 2>/dev/null; then
+  echo "[bootstrap] SSM agent not running — installing via snap"
+  snap install amazon-ssm-agent --classic
+fi
+snap start amazon-ssm-agent 2>/dev/null || true
+# Wait up to 30 s for SSM connectivity (best-effort; failure is non-fatal)
+for i in $(seq 1 6); do
+  if snap services amazon-ssm-agent 2>/dev/null | grep -q active; then
+    echo "[bootstrap] SSM agent is active"
+    break
+  fi
+  sleep 5
+done
+
+# ---------------------------------------------------------------------------
+# 2. System dependencies
+# ---------------------------------------------------------------------------
+apt-get update -y
+apt-get install -y unzip curl git
+
+# AWS CLI v2 (DLAMI usually has it; skip if already present)
+if ! command -v aws &>/dev/null; then
+  echo "[bootstrap] Installing AWS CLI v2"
+  curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+  unzip -q /tmp/awscliv2.zip -d /tmp
+  /tmp/aws/install
+fi
+
+# uv — installed as root so SSM sessions (which run as root) can use it directly
+if ! command -v uv &>/dev/null; then
+  echo "[bootstrap] Installing uv"
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  # The installer drops uv in /root/.local/bin by default; symlink to /usr/local/bin
+  # so all processes find it without modifying PATH.
+  ln -sf /root/.local/bin/uv /usr/local/bin/uv
+fi
+
+# ---------------------------------------------------------------------------
+# 3. Pull repo from S3
+# ---------------------------------------------------------------------------
+echo "[bootstrap] Fetching repo.zip from s3://${bucket_name}/repo.zip"
+aws s3 cp "s3://${bucket_name}/repo.zip" /opt/repo.zip --region ${region}
+mkdir -p /opt/pour-decisions
+unzip -o /opt/repo.zip -d /opt/pour-decisions
+echo "[bootstrap] Repo unpacked to /opt/pour-decisions"
+
+# ---------------------------------------------------------------------------
+# 4. mistral-finetune
+# ---------------------------------------------------------------------------
+if [ ! -d /opt/mistral-finetune ]; then
+  echo "[bootstrap] Cloning mistral-finetune (public repo, no credentials)"
+  git clone https://github.com/mistralai/mistral-finetune.git /opt/mistral-finetune
+fi
+cd /opt/mistral-finetune
+# mistral-finetune hard-pins torch==2.2 / triton==2.2 / xformers==0.0.24. Those
+# wheels exist for cp311 but not cp312 (the DLAMI default), so pin the venv to
+# 3.11 to avoid an xformers source build. Install torch first so xformers finds
+# it (--no-build-isolation). numpy<2 keeps torch 2.2 (built against numpy 1.x).
+uv venv --python 3.11
+uv pip install torch==2.2 triton==2.2 "numpy<2"
+uv pip install -r requirements.txt --no-build-isolation
+# requirements pins mistral-common>=1.3.1 with no upper bound; 1.5+ moved
+# InstructTokenizerBase out of sentencepiece and breaks mistral-finetune's
+# imports. Pin to the newest version that still works (verified 1.4.4).
+uv pip install "mistral-common==1.4.4"
+echo "[bootstrap] mistral-finetune dependencies installed"
+
+# ---------------------------------------------------------------------------
+# 5. Write train.sh — the self-contained, idempotent job script
+#    Uses a quoted heredoc (<<'TRAINSH') so bash vars ($${...}) are written
+#    verbatim. BUCKET_PLACEHOLDER / REGION_PLACEHOLDER are then sed-replaced
+#    with the tofu-interpolated values (bucket_name, region) after the heredoc.
+# ---------------------------------------------------------------------------
+mkdir -p /opt/pour-decisions
+cat > /opt/pour-decisions/train.sh <<'TRAINSH'
+#!/usr/bin/env bash
+# Fine-tune, merge LoRA, and upload artifacts to S3.
+# Designed to be idempotent and spot-restart-safe:
+#   - Model sync from S3 overwrites cleanly if already present.
+#   - reformat_data is safe to re-run (produces the same output).
+#   - run_dir is cleared before torchrun (mistral-finetune aborts if it exists).
+#   - .train-done guard (written at the end) prevents re-running on success.
+#
+# Invoked by the pour-train.service systemd unit on every boot (unless
+# .train-done exists), or directly: systemctl start pour-train.service
+set -euo pipefail
+exec > >(tee -a /var/log/pour-train.log) 2>&1
+
+echo "[train] Starting fine-tune at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+BUCKET="BUCKET_PLACEHOLDER"
+REGION="REGION_PLACEHOLDER"
+
+# ---------------------------------------------------------------------------
+# Step 1 — sync base model from S3
+# The model was staged to S3 one-time from the local machine via `make stage-model`.
+# Syncing here (not in bootstrap) means a spot restart re-pulls any partial file.
+# ---------------------------------------------------------------------------
+echo "[train] Syncing base model from s3://$BUCKET/models/7B-Instruct-v0.3/"
+cd /opt/pour-decisions
+mkdir -p /opt/pour-decisions/models/7B-Instruct-v0.3
+aws s3 sync \
+  "s3://$BUCKET/models/7B-Instruct-v0.3/" \
+  /opt/pour-decisions/models/7B-Instruct-v0.3/ \
+  --region "$REGION"
+
+# ---------------------------------------------------------------------------
+# Step 2 — generate absolute-path config
+# The committed 7B.yaml uses relative paths which only work when cwd is the
+# repo root. mistral-finetune requires cwd = /opt/mistral-finetune for -m train
+# to resolve. We derive 7B.box.yaml with all four paths rewritten to absolute
+# so the YAML is cwd-agnostic.
+# ---------------------------------------------------------------------------
+echo "[train] Generating absolute-path config /opt/pour-decisions/finetune/7B.box.yaml"
+sed -E \
+  -e 's#^( *model_id_or_path: *).*#\1"/opt/pour-decisions/models/7B-Instruct-v0.3"#' \
+  -e 's#^( *instruct_data: *).*#\1"/opt/pour-decisions/data/prepared/train.jsonl"#' \
+  -e 's#^( *eval_instruct_data: *).*#\1"/opt/pour-decisions/data/prepared/val.jsonl"#' \
+  -e 's#^( *run_dir: *).*#\1"/opt/pour-decisions/runs/cocktail-lora"#' \
+  /opt/pour-decisions/finetune/7B.yaml > /opt/pour-decisions/finetune/7B.box.yaml
+
+# ---------------------------------------------------------------------------
+# Step 3 — reformat + validate training data
+# Must run from /opt/mistral-finetune so Python can resolve the utils package.
+# reformat_data is idempotent: it rewrites JSONL to the format mistral-finetune
+# expects; running it twice on the same file is safe.
+# validate_data fails fast if the YAML or data are malformed — abort early.
+# ---------------------------------------------------------------------------
+echo "[train] Reformatting training data"
+cd /opt/mistral-finetune # -m utils.* resolves the utils package only from here
+.venv/bin/python -m utils.reformat_data /opt/pour-decisions/data/prepared/train.jsonl
+.venv/bin/python -m utils.reformat_data /opt/pour-decisions/data/prepared/val.jsonl
+echo "[train] Validating training YAML (box config)"
+.venv/bin/python -m utils.validate_data --train_yaml /opt/pour-decisions/finetune/7B.box.yaml
+
+# ---------------------------------------------------------------------------
+# Step 4 — fine-tune
+# torchrun runs from /opt/mistral-finetune so `-m train` resolves against
+# the mistral-finetune package. The box YAML carries absolute paths so cwd
+# does not affect data or output locations.
+# $RANDOM is evaluated by bash at runtime to pick a free master port.
+# ---------------------------------------------------------------------------
+echo "[train] torchrun — single GPU"
+# mistral-finetune aborts with RuntimeError if run_dir already exists (no resume).
+# Clear it so a spot stop→restart always does a clean from-scratch retrain.
+rm -rf /opt/pour-decisions/runs/cocktail-lora
+# mistral-finetune's set_device() reads os.environ['CUDA_VISIBLE_DEVICES']
+# directly and KeyErrors if unset (it is, under systemd). Single GPU -> 0.
+export CUDA_VISIBLE_DEVICES=0
+cd /opt/mistral-finetune && .venv/bin/torchrun \
+  --nproc-per-node 1 \
+  --master_port $RANDOM \
+  -m train \
+  /opt/pour-decisions/finetune/7B.box.yaml
+
+# ---------------------------------------------------------------------------
+# Step 5 — merge LoRA adapter into base weights
+# Discover the latest checkpoint dynamically so no hardcoded step number is
+# needed (useful if max_steps differs or a spot restart produced a later ckpt).
+# ---------------------------------------------------------------------------
+echo "[train] Merging LoRA adapter into base"
+CKPT=$(ls -d /opt/pour-decisions/runs/cocktail-lora/checkpoints/checkpoint_* | sort | tail -1)
+echo "[train] Using checkpoint: $CKPT"
+mkdir -p /opt/pour-decisions/serving/merged
+cd /opt/mistral-finetune && .venv/bin/python -m utils.merge_lora \
+  --lora_ckpt "$CKPT/consolidated/lora.safetensors" \
+  --initial_model_ckpt /opt/pour-decisions/models/7B-Instruct-v0.3/consolidated.safetensors \
+  --dump_ckpt /opt/pour-decisions/serving/merged/consolidated.safetensors \
+  --scaling 2.0
+
+echo "[train] Copying tokenizer and params alongside merged checkpoint"
+cp /opt/pour-decisions/models/7B-Instruct-v0.3/tokenizer.model.v3 \
+   /opt/pour-decisions/serving/merged/
+cp /opt/pour-decisions/models/7B-Instruct-v0.3/params.json \
+   /opt/pour-decisions/serving/merged/
+
+# ---------------------------------------------------------------------------
+# Step 6 — upload artifacts to S3
+# merged/: the 3 files the serve box needs.
+# runs/:   intermediate LoRA checkpoints, preserved as training artifacts.
+# ---------------------------------------------------------------------------
+echo "[train] Uploading merged artifacts to S3"
+aws s3 cp /opt/pour-decisions/serving/merged/consolidated.safetensors \
+  "s3://$BUCKET/merged/consolidated.safetensors"
+aws s3 cp /opt/pour-decisions/serving/merged/tokenizer.model.v3 \
+  "s3://$BUCKET/merged/tokenizer.model.v3"
+aws s3 cp /opt/pour-decisions/serving/merged/params.json \
+  "s3://$BUCKET/merged/params.json"
+
+echo "[train] Syncing run checkpoints to s3://$BUCKET/runs/"
+aws s3 sync /opt/pour-decisions/runs/ "s3://$BUCKET/runs/"
+
+echo "[train] Done at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# Guard: prevents pour-train.service from re-running on subsequent reboots
+# after a successful job. To re-run deliberately, delete this file first.
+touch /opt/pour-decisions/.train-done
+TRAINSH
+
+# Bake the bucket name and region into train.sh at bootstrap time so the
+# script carries no external dependencies at job-run time.
+sed -i "s|BUCKET_PLACEHOLDER|${bucket_name}|g" /opt/pour-decisions/train.sh
+sed -i "s|REGION_PLACEHOLDER|${region}|g"      /opt/pour-decisions/train.sh
+chmod +x /opt/pour-decisions/train.sh
+
+# ---------------------------------------------------------------------------
+# 6. Systemd unit — pour-train.service
+#
+# Retry flow:
+#   - bootstrap installs + enables this unit (fires on every boot).
+#   - SSM trigger: touch .train-requested && systemctl start pour-train.service
+#   - On spot reclaim+stop → restart: systemd fires the unit again on boot.
+#     The .train-requested check ensures it only runs when explicitly triggered.
+#     The .train-done check stops it re-running after a successful job.
+#   - To re-trigger after success: rm .train-done && systemctl start pour-train
+# ---------------------------------------------------------------------------
+cat > /etc/systemd/system/pour-train.service <<'SYSTEMD'
+[Unit]
+Description=Pour Decisions fine-tune job (spot-restart-safe)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Run only if the SSM trigger marker exists AND the job has not yet succeeded.
+ExecStart=/usr/bin/bash -lc 'if [ -f /opt/pour-decisions/.train-requested ] && [ ! -f /opt/pour-decisions/.train-done ]; then bash /opt/pour-decisions/train.sh; fi'
+StandardOutput=append:/var/log/pour-train.log
+StandardError=append:/var/log/pour-train.log
+# No timeout — fine-tune runs can take hours.
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
+SYSTEMD
+
+systemctl daemon-reload
+# Enable so it fires on every subsequent boot (including post-spot-stop restarts).
+# Do NOT start it here — wait for the SSM trigger.
+systemctl enable pour-train.service
+echo "[bootstrap] pour-train.service installed and enabled"
+
+# ---------------------------------------------------------------------------
+# Done
+# ---------------------------------------------------------------------------
+touch /opt/READY
+echo "[bootstrap] Train bootstrap complete — instance is READY"
+echo "[bootstrap] To start training: touch /opt/pour-decisions/.train-requested && systemctl start pour-train.service"

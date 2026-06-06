@@ -1,0 +1,25 @@
+# Single-GPU LoRA config for cocktail-measure normalization.
+data:
+  instruct_data: "data/prepared/train.jsonl"
+  data: ""
+  eval_instruct_data: "data/prepared/val.jsonl"
+
+model_id_or_path: "models/7B-Instruct-v0.3"   # downloaded in runbook step 2
+lora:
+  rank: 16                # small task; 16 avoids overfitting ~90 cocktails
+
+seq_len: 2048             # records are short JSON; 2048 fits bf16 7B LoRA on a 24GB A10G (g5.xlarge)
+batch_size: 1
+max_steps: 300
+optim:
+  lr: 6.e-5
+  weight_decay: 0.1
+  pct_start: 0.05
+
+seed: 0
+log_freq: 1
+eval_freq: 50
+no_eval: False
+ckpt_freq: 100
+save_adapters: True
+run_dir: "runs/cocktail-lora"

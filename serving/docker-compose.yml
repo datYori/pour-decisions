@@ -1,0 +1,16 @@
+services:
+  vllm:
+    image: vllm/vllm-openai:latest
+    runtime: nvidia
+    ipc: host
+    ports: ["8000:8000"]
+    volumes:
+      - ./merged:/models/merged:ro
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    command: >
+      --model /models/merged
+      --tokenizer_mode mistral
+      --load_format mistral
+      --config_format mistral
+      --served-model-name cocktail-tuned
+      --max-model-len 8192

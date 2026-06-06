@@ -1,0 +1,36 @@
+# Python / uv
+.venv/
+__pycache__/
+*.pyc
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Generated / derived data, models, tracking artifacts (raw data IS tracked)
+data/prepared/
+models/
+merged/
+runs/
+*.safetensors
+mlruns/
+reports/*.tmp
+
+# Secrets — never commit
+.env
+*.pem
+kaggle.json
+
+# Local-only context (job-application specifics) — never commit
+CONTEXT.local.md
+
+# OpenTofu / Terraform local state
+infra/.terraform/
+infra/repo.zip
+infra/terraform.tfstate
+infra/terraform.tfstate.backup
+
+# OS
+.DS_Store
+
+docs/superpowers/
+CONTEXT.md
