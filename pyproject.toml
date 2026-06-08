@@ -12,6 +12,10 @@ dependencies = [
 dev = ["pytest>=8", "ruff>=0.4", "mypy>=1.10"]
 # Heavy/GPU deps (installed only on the GPU box, not in CI):
 gpu = ["mistral-common>=1.5", "openai>=1.30", "mlflow>=2.12"]
+# Apple Silicon local fine-tune (Mac only; never installed in CI):
+mlx = ["mlx-lm>=0.31", "outlines>=1.0", "huggingface_hub>=0.34"]
+# CUDA workstation fine-tune (not installed in CI; not run on the Mac):
+peft = ["transformers>=4.45", "peft>=0.13", "trl>=0.11", "datasets>=3.0", "torch>=2.4", "accelerate>=1.0", "outlines>=1.0", "huggingface_hub>=0.34"]
 
 [tool.ruff]
 line-length = 100
@@ -24,6 +28,23 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
+
+# Optional backend libs (installed only via the `mlx`/`peft` extras, never in CI).
+# Module-scoped missing-import handling keeps `matrix/` clean whether or not they
+# are installed, without per-line ignores that flip to unused when present.
+[[tool.mypy.overrides]]
+module = [
+    "mlx.*",
+    "mlx_lm.*",
+    "outlines.*",
+    "transformers.*",
+    "peft.*",
+    "trl.*",
+    "datasets.*",
+    "torch.*",
+    "accelerate.*",
+]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
