@@ -2825,8 +2825,10 @@ gpu = [
 ]
 mlx = [
     { name = "huggingface-hub" },
+    { name = "matplotlib" },
     { name = "mlx-lm" },
     { name = "outlines" },
+    { name = "tensorboardx" },
 ]
 peft = [
     { name = "accelerate" },
@@ -2846,6 +2848,7 @@ requires-dist = [
     { name = "huggingface-hub", marker = "extra == 'mlx'", specifier = ">=0.34" },
     { name = "huggingface-hub", marker = "extra == 'peft'", specifier = ">=0.34" },
     { name = "jsonschema", specifier = ">=4.21" },
+    { name = "matplotlib", marker = "extra == 'mlx'", specifier = ">=3.8" },
     { name = "mistral-common", marker = "extra == 'gpu'", specifier = ">=1.5" },
     { name = "mlflow", marker = "extra == 'gpu'", specifier = ">=2.12" },
     { name = "mlx-lm", marker = "extra == 'mlx'", specifier = ">=0.31" },
@@ -2857,6 +2860,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.6" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
+    { name = "tensorboardx", marker = "extra == 'mlx'", specifier = ">=2.6" },
     { name = "torch", marker = "extra == 'peft'", specifier = ">=2.4" },
     { name = "transformers", marker = "extra == 'peft'", specifier = ">=4.45" },
     { name = "trl", marker = "extra == 'peft'", specifier = ">=0.11" },
@@ -4042,6 +4046,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/83/d3/803453b36afefb7c2bb238361cd4ae6125a569b4db67cd9e79846ba2d68c/sympy-1.14.0.tar.gz", hash = "sha256:d3d3fe8df1e5a0b42f0e7bdf50541697dbe7d23746e894990c030e2b05e72517", size = 7793921, upload-time = "2025-04-27T18:05:01.611Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl", hash = "sha256:e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5", size = 6299353, upload-time = "2025-04-27T18:04:59.103Z" },
+]
+
+[[package]]
+name = "tensorboardx"
+version = "2.6.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
+    { name = "packaging" },
+    { name = "protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/48/a9/fc520ea91ab1f3ba51cbf3fe24f2b6364ed3b49046969e0868d46d6da372/tensorboardx-2.6.5.tar.gz", hash = "sha256:ca176db3997ee8c07d2eb77381225956a3fd1c10c91beafab1f17069adc47017", size = 4770195, upload-time = "2026-04-03T15:40:23.803Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/87/0f/69fbab4c30b2f3a76e6de67585ea72a8eccf381751f5c0046b966fde9658/tensorboardx-2.6.5-py3-none-any.whl", hash = "sha256:c10b891d00af306537cb8b58a039b2ba41571f0da06f433a41c4ca8d6abe1373", size = 87510, upload-time = "2026-04-03T15:40:22.111Z" },
 ]
 
 [[package]]

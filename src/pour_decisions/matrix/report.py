@@ -10,6 +10,10 @@ from typing import Literal
 Status = Literal["ok", "skipped", "error"]
 
 
+def _opt_float(x: object) -> float | None:
+    return float(x) if x is not None else None  # type: ignore[arg-type]
+
+
 @dataclass
 class EvalScores:
     quantity: float
@@ -36,6 +40,8 @@ class ModelResult:
     train_seconds: float
     modes: dict[str, ModeResult]
     reason: str = ""
+    final_train_loss: float | None = None
+    best_val_loss: float | None = None
 
 
 _HEADER = (
@@ -71,6 +77,16 @@ def render_markdown(results: list[ModelResult]) -> str:
                 f"| {m.untuned.json_validity:.3f}->{m.tuned.json_validity:.3f} "
                 f"| {m.tuned_hallucination:.3f} | {r.train_seconds:.0f} |"
             )
+    lines.append("")
+    lines.append("## Training")
+    lines.append("")
+    lines.append("| model | final train loss | best val loss | dashboard |")
+    lines.append("|---|---|---|---|")
+    for r in results:
+        ftl = f"{r.final_train_loss:.3f}" if r.final_train_loss is not None else "-"
+        bvl = f"{r.best_val_loss:.3f}" if r.best_val_loss is not None else "-"
+        png = f"runs/local/{r.key}/training_dashboard.png"
+        lines.append(f"| {r.key} | {ftl} | {bvl} | [png]({png}) |")
     return "\n".join(lines) + "\n"
 
 
@@ -121,6 +137,8 @@ def rebuild_results(data: list[dict[str, object]]) -> list[ModelResult]:
                 train_seconds=float(d["train_seconds"]),  # type: ignore[arg-type]
                 modes=modes,
                 reason=str(d.get("reason", "")),
+                final_train_loss=_opt_float(d.get("final_train_loss")),
+                best_val_loss=_opt_float(d.get("best_val_loss")),
             )
         )
     return out

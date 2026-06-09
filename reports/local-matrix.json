@@ -6,7 +6,7 @@
     "license": "apache-2.0",
     "backend": "mlx",
     "status": "ok",
-    "train_seconds": 35.85679291699853,
+    "train_seconds": 38.379124999999476,
     "modes": {
       "unconstrained": {
         "untuned": {
@@ -16,9 +16,9 @@
           "json_validity": 0.06666666666666667
         },
         "tuned": {
-          "quantity": 1.0,
-          "unit": 0.9848484848484849,
-          "ingredient": 0.9696969696969697,
+          "quantity": 0.9384615384615385,
+          "unit": 0.9692307692307692,
+          "ingredient": 0.9230769230769231,
           "json_validity": 1.0
         },
         "tuned_hallucination": 0.5
@@ -32,14 +32,16 @@
         },
         "tuned": {
           "quantity": 1.0,
-          "unit": 0.9846153846153847,
-          "ingredient": 0.9538461538461539,
+          "unit": 0.9848484848484849,
+          "ingredient": 0.9696969696969697,
           "json_validity": 1.0
         },
         "tuned_hallucination": 0.5
       }
     },
-    "reason": ""
+    "reason": "",
+    "final_train_loss": 0.08640298247337341,
+    "best_val_loss": 0.4475645422935486
   },
   {
     "key": "ministral-3-3b-base",
@@ -48,7 +50,7 @@
     "license": "apache-2.0",
     "backend": "mlx",
     "status": "ok",
-    "train_seconds": 190.4139637909975,
+    "train_seconds": 204.31398374999844,
     "modes": {
       "unconstrained": {
         "untuned": {
@@ -81,6 +83,8 @@
         "tuned_hallucination": 0.0
       }
     },
-    "reason": ""
+    "reason": "",
+    "final_train_loss": 0.11118127107620239,
+    "best_val_loss": 0.35859671235084534
   }
 ]

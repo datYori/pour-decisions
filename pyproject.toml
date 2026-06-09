@@ -13,7 +13,7 @@ dev = ["pytest>=8", "ruff>=0.4", "mypy>=1.10"]
 # Heavy/GPU deps (installed only on the GPU box, not in CI):
 gpu = ["mistral-common>=1.5", "openai>=1.30", "mlflow>=2.12"]
 # Apple Silicon local fine-tune (Mac only; never installed in CI):
-mlx = ["mlx-lm>=0.31", "outlines>=1.0", "huggingface_hub>=0.34"]
+mlx = ["mlx-lm>=0.31", "outlines>=1.0", "huggingface_hub>=0.34", "matplotlib>=3.8", "tensorboardX>=2.6"]
 # CUDA workstation fine-tune (not installed in CI; not run on the Mac):
 peft = ["transformers>=4.45", "peft>=0.13", "trl>=0.11", "datasets>=3.0", "torch>=2.4", "accelerate>=1.0", "outlines>=1.0", "huggingface_hub>=0.34"]
 
@@ -36,6 +36,7 @@ strict = true
 module = [
     "mlx.*",
     "mlx_lm.*",
+    "numpy.*",
     "outlines.*",
     "transformers.*",
     "peft.*",
@@ -43,6 +44,8 @@ module = [
     "datasets.*",
     "torch.*",
     "accelerate.*",
+    "matplotlib.*",
+    "tensorboardX.*",
 ]
 ignore_missing_imports = true
 

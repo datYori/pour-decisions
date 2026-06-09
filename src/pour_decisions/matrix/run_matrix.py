@@ -31,6 +31,14 @@ def read_records(path: Path) -> list[Record]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
+def _read_training_summary(adapter_dir: Path) -> tuple[float | None, float | None]:
+    p = adapter_dir / "summary.json"
+    if not p.exists():
+        return None, None
+    s = json.loads(p.read_text())
+    return s.get("final_train_loss"), s.get("best_val_loss")
+
+
 def run_one(
     spec: ModelSpec,
     trainer: Trainer,
@@ -60,6 +68,7 @@ def run_one(
         t0 = time.monotonic()
         trainer.train(spec, data_dir, adapter_dir)
         base.train_seconds = time.monotonic() - t0
+        base.final_train_loss, base.best_val_loss = _read_training_summary(adapter_dir.parent)
 
         up_by_mode: dict[str, list[Prediction]] = {}
         untuned = predictor_factory(spec.hf_id, adapter_path=None)
